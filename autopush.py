@@ -4,7 +4,6 @@
 import json
 import os
 import sys
-from pathlib import Path
 
 CONFIG_FILE = ".autopush.json"
 
@@ -50,3 +49,7 @@ def load_config():
     config.setdefault("commit_prefix", "Auto")
 
     return config
+
+
+if __name__ == "__main__":
+    load_config()
