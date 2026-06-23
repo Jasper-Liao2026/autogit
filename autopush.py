@@ -8,6 +8,10 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+# 修复 Windows GBK 终端 Unicode 编码问题
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 CONFIG_FILE = ".autopush.json"
 
 DEFAULT_CONFIG = {
