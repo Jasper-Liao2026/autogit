@@ -3,6 +3,7 @@
 
 import json
 import os
+import subprocess
 import sys
 
 CONFIG_FILE = ".autopush.json"
@@ -49,6 +50,39 @@ def load_config():
     config.setdefault("commit_prefix", "Auto")
 
     return config
+
+
+def run_git(args, capture=True):
+    """运行 git 命令，返回 (returncode, stdout, stderr)。"""
+    result = subprocess.run(
+        ["git"] + args,
+        capture_output=capture,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def check_git_repo():
+    """检查当前目录是否是 git 仓库，不是则退出。"""
+    code, _, _ = run_git(["rev-parse", "--git-dir"])
+    if code != 0:
+        print("✗ 错误: 当前目录不是 Git 仓库，请先运行 git init")
+        sys.exit(1)
+
+
+def check_remote(branch):
+    """检查是否配置了远程仓库和上游分支，没有则退出。"""
+    code, stdout, _ = run_git(["remote"])
+    if code != 0 or not stdout:
+        print("✗ 错误: 未配置远程仓库，请先运行 git remote add origin <url>")
+        sys.exit(1)
+
+    # 检查本地分支是否有上游
+    code, upstream, _ = run_git(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"])
+    if code != 0:
+        print(f"✗ 错误: 分支 {branch} 没有设置上游，请先运行 git push -u origin {branch}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
