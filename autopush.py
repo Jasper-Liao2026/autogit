@@ -375,7 +375,6 @@ def main():
             changed = get_changed_files(current_files)
 
             if not changed:
-                last_push_info = f"{datetime.now().strftime('%H:%M')} — 无变动"
                 render_status(config, watch_patterns, state, next_check, last_push_info)
                 continue
 
