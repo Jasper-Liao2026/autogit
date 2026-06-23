@@ -100,16 +100,20 @@ def check_remote(branch):
 def get_changed_files(watch_files):
     """返回 watch_files 中相比 HEAD 有变动的文件列表。
 
-    检测方式: git diff --name-only HEAD -- <file>
-    同时检测工作区和暂存区的改动。
+    同时检测工作区、暂存区和未跟踪文件的改动。
     """
     changed = []
     for f in watch_files:
         if not os.path.exists(f):
             continue  # 不存在的文件在启动时已警告，这里静默跳过
-        # 检测工作区改动
+        # 检测文件是否被 git 跟踪
+        code_tracked, _, _ = run_git(["ls-files", "--error-unmatch", "--", f])
+        if code_tracked != 0:
+            # 未跟踪的文件，存在即视为有变动
+            changed.append(f)
+            continue
+        # 已跟踪的文件，检测工作区和暂存区改动
         code1, _, _ = run_git(["diff", "--quiet", "HEAD", "--", f])
-        # 检测暂存区改动
         code2, _, _ = run_git(["diff", "--quiet", "--cached", "--", f])
         # 任一返回非0表示有改动
         if code1 != 0 or code2 != 0:
