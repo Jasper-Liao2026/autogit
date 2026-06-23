@@ -85,5 +85,40 @@ def check_remote(branch):
         sys.exit(1)
 
 
+def get_changed_files(watch_files):
+    """返回 watch_files 中相比 HEAD 有变动的文件列表。
+
+    检测方式: git diff --name-only HEAD -- <file>
+    同时检测工作区和暂存区的改动。
+    """
+    changed = []
+    for f in watch_files:
+        if not os.path.exists(f):
+            continue  # 不存在的文件在启动时已警告，这里静默跳过
+        # 检测工作区改动
+        code1, _, _ = run_git(["diff", "--quiet", "HEAD", "--", f])
+        # 检测暂存区改动
+        code2, _, _ = run_git(["diff", "--quiet", "--cached", "--", f])
+        # 任一返回非0表示有改动
+        if code1 != 0 or code2 != 0:
+            changed.append(f)
+    return changed
+
+
+def validate_files_exist(watch_files):
+    """启动时检查文件是否存在，警告跳过不存在的文件。
+    返回实际存在的文件列表。"""
+    existing = []
+    for f in watch_files:
+        if os.path.exists(f):
+            existing.append(f)
+        else:
+            print(f"⚠ 警告: 文件 '{f}' 不存在，已跳过")
+    if not existing:
+        print("✗ 错误: 所有监控文件都不存在，请检查 .autopush.json 中的 files 列表")
+        sys.exit(1)
+    return existing
+
+
 if __name__ == "__main__":
     load_config()
