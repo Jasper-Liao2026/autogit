@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """AutoPush — 自动推送指定文件到 GitHub"""
 
+import glob as glob_mod
 import json
 import os
 import subprocess
@@ -97,6 +98,44 @@ def check_remote(branch):
         sys.exit(1)
 
 
+def resolve_patterns(patterns):
+    """展开 patterns 中的通配符和目录，返回匹配的文件路径列表。
+
+    支持：
+    - 普通文件路径: 原样保留（由 get_changed_files 检查是否存在）
+    - 目录路径: 递归包含目录下所有文件（跳过 .git 目录）
+    - glob 通配符: 如 *.py, src/**/*.py，支持 ** 递归匹配
+    """
+    expanded = set()
+    has_glob_chars = lambda s: any(c in s for c in '*?[]')
+
+    for pattern in patterns:
+        # 目录 → 递归收集所有文件
+        if os.path.isdir(pattern):
+            found = False
+            for root, dirs, filenames in os.walk(pattern):
+                dirs[:] = [d for d in dirs if d != '.git']
+                for fname in filenames:
+                    expanded.add(os.path.normpath(os.path.join(root, fname)).replace('\\', '/'))
+                    found = True
+            if not found:
+                print(f"⚠ 警告: 目录 '{pattern}' 下没有文件")
+        elif has_glob_chars(pattern):
+            # 通配符 → glob 展开
+            matches = glob_mod.glob(pattern, recursive=True)
+            matched = [os.path.normpath(m).replace('\\', '/') for m in matches if os.path.isfile(m)]
+            expanded.update(matched)
+            if not matched:
+                print(f"⚠ 警告: 模式 '{pattern}' 没有匹配到任何文件")
+        else:
+            # 普通文件路径
+            expanded.add(pattern)
+
+    # 过滤掉 .git 目录下的文件
+    result = sorted([f for f in expanded if '.git/' not in f and not f.startswith('.git/')])
+    return result
+
+
 def get_changed_files(watch_files):
     """返回 watch_files 中相比 HEAD 有变动的文件列表。
 
@@ -121,19 +160,16 @@ def get_changed_files(watch_files):
     return changed
 
 
-def validate_files_exist(watch_files):
-    """启动时检查文件是否存在，警告跳过不存在的文件。
-    返回实际存在的文件列表。"""
-    existing = []
-    for f in watch_files:
-        if os.path.exists(f):
-            existing.append(f)
-        else:
-            print(f"⚠ 警告: 文件 '{f}' 不存在，已跳过")
-    if not existing:
-        print("✗ 错误: 所有监控文件都不存在，请检查 .autopush.json 中的 files 列表")
+def validate_files_exist(patterns):
+    """启动时展开 patterns，检查是否匹配到文件。
+    返回展开后的文件列表。如果没有匹配到任何文件则退出。"""
+    expanded = resolve_patterns(patterns)
+
+    if not expanded:
+        print("✗ 错误: 所有监控规则都没有匹配到文件，请检查 .autopush.json 中的 files 列表")
         sys.exit(1)
-    return existing
+
+    return expanded
 
 
 def build_commit_message(files, prefix):
@@ -242,7 +278,7 @@ def get_key_blocking():
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def render_status(config, watching, state, next_check, last_push):
+def render_status(config, patterns, state, next_check, last_push):
     """打印运行状态界面。"""
     # 清屏
     os.system("cls" if sys.platform == "win32" else "clear")
@@ -252,7 +288,7 @@ def render_status(config, watching, state, next_check, last_push):
 
     print("=" * 45)
     print(f"  AutoPush 自动推送 | 状态: {status_icon}")
-    print(f"  监控: {', '.join(watching)}")
+    print(f"  监控规则: {', '.join(patterns)}")
     print(f"  间隔: {config['interval_minutes']}分钟 | 分支: {config['branch']}")
     print(f"  {hints}")
     print("=" * 45)
@@ -271,9 +307,14 @@ def main():
 
     check_remote(config["branch"])
 
-    # 3. 校验监控文件
-    watching = validate_files_exist(config["files"])
-    print(f"✓ 监控 {len(watching)} 个文件: {', '.join(watching)}")
+    # 3. 校验监控规则
+    watch_patterns = config["files"]
+    initial_files = resolve_patterns(watch_patterns)
+    if not initial_files:
+        print("✗ 错误: 所有监控规则都没有匹配到文件，请检查 .autopush.json 中的 files 列表")
+        sys.exit(1)
+    print(f"✓ 监控规则: {', '.join(watch_patterns)}")
+    print(f"  当前匹配 {len(initial_files)} 个文件")
 
     # 4. 初始化状态
     state = "running"  # running | paused
@@ -285,7 +326,7 @@ def main():
     start_time = datetime.now()
 
     # 首次渲染
-    render_status(config, watching, state, next_check, last_push_info)
+    render_status(config, watch_patterns, state, next_check, last_push_info)
 
     # 5. 主循环
     tick = 0.2  # 每0.2秒检查一次按键
@@ -302,14 +343,14 @@ def main():
             elif key == "p" and state == "running":
                 state = "paused"
                 next_check = None
-                render_status(config, watching, state, next_check, last_push_info)
+                render_status(config, watch_patterns, state, next_check, last_push_info)
                 print("\n已暂停，按 [r] 恢复")
             elif key == "r" and state == "paused":
                 state = "running"
                 consecutive_failures = 0  # 手动恢复时重置失败计数
                 next_check = datetime.now() + timedelta(seconds=interval)  # 恢复后立即检查一次
                 elapsed = interval  # 触发立即检查
-                render_status(config, watching, state, next_check, last_push_info)
+                render_status(config, watch_patterns, state, next_check, last_push_info)
                 print("\n已恢复运行")
 
             # --- 暂停时跳过检查 ---
@@ -321,7 +362,7 @@ def main():
 
             # --- 更新倒计时显示（每秒刷新） ---
             if int(elapsed) != int(elapsed - tick):
-                render_status(config, watching, state, next_check, last_push_info)
+                render_status(config, watch_patterns, state, next_check, last_push_info)
 
             # --- 到达检查时间 ---
             if elapsed < interval:
@@ -329,12 +370,13 @@ def main():
             elapsed = 0.0
             next_check = datetime.now() + timedelta(seconds=interval)
 
-            # 检测文件变动
-            changed = get_changed_files(watching)
+            # 重新展开模式（捕获新文件），检测变动
+            current_files = resolve_patterns(watch_patterns)
+            changed = get_changed_files(current_files)
 
             if not changed:
                 last_push_info = f"{datetime.now().strftime('%H:%M')} — 无变动"
-                render_status(config, watching, state, next_check, last_push_info)
+                render_status(config, watch_patterns, state, next_check, last_push_info)
                 continue
 
             # 有变动 → 执行 git 操作
@@ -351,7 +393,7 @@ def main():
             if has_conflict:
                 state = "paused"
                 last_push_info = f"{datetime.now().strftime('%H:%M')} ⚠ 冲突，需手动解决"
-                render_status(config, watching, state, None, last_push_info)
+                render_status(config, watch_patterns, state, None, last_push_info)
                 print("\n⚠ 检测到合并冲突，已自动暂停。请手动解决冲突后按 [r] 恢复。")
                 continue
             if not pull_ok:
@@ -371,11 +413,11 @@ def main():
             if consecutive_failures >= 10:
                 state = "paused"
                 last_push_info = f"{datetime.now().strftime('%H:%M')} ⚠ 连续10次失败，已暂停"
-                render_status(config, watching, state, None, last_push_info)
+                render_status(config, watch_patterns, state, None, last_push_info)
                 print(f"\n⚠ 连续 {consecutive_failures} 次推送失败，已自动暂停。按 [r] 恢复。")
                 continue
 
-            render_status(config, watching, state, next_check, last_push_info)
+            render_status(config, watch_patterns, state, next_check, last_push_info)
 
     except KeyboardInterrupt:
         print("\n")  # 换行
