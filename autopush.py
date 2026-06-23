@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 CONFIG_FILE = ".autopush.json"
 
@@ -50,6 +50,12 @@ def load_config():
     config.setdefault("interval_minutes", 30)
     config.setdefault("branch", "main")
     config.setdefault("commit_prefix", "Auto")
+
+    # 校验 interval_minutes 为正整数
+    interval = config.get("interval_minutes")
+    if not isinstance(interval, int) or interval <= 0:
+        print("✗ 错误: interval_minutes 必须为正整数")
+        sys.exit(1)
 
     return config
 
@@ -264,7 +270,7 @@ def main():
     # 4. 初始化状态
     state = "running"  # running | paused
     interval = config["interval_minutes"] * 60  # 转为秒
-    next_check = datetime.now()  # 首次立即检查
+    next_check = datetime.now() + timedelta(seconds=interval)  # 首次检查在未来 interval 秒后
     last_push_info = None
     consecutive_failures = 0
     push_count = 0
@@ -292,7 +298,8 @@ def main():
                 print("\n已暂停，按 [r] 恢复")
             elif key == "r" and state == "paused":
                 state = "running"
-                next_check = datetime.now()  # 恢复后立即检查一次
+                consecutive_failures = 0  # 手动恢复时重置失败计数
+                next_check = datetime.now() + timedelta(seconds=interval)  # 恢复后立即检查一次
                 elapsed = interval  # 触发立即检查
                 render_status(config, watching, state, next_check, last_push_info)
                 print("\n已恢复运行")
@@ -312,7 +319,7 @@ def main():
             if elapsed < interval:
                 continue
             elapsed = 0.0
-            next_check = datetime.now()
+            next_check = datetime.now() + timedelta(seconds=interval)
 
             # 检测文件变动
             changed = get_changed_files(watching)
