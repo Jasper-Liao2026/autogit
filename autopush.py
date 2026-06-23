@@ -178,5 +178,54 @@ def git_push(branch):
     return True
 
 
+def get_key():
+    """非阻塞获取按键，没有按键时返回 None。"""
+    if sys.platform == "win32":
+        import msvcrt
+        if msvcrt.kbhit():
+            key = msvcrt.getch()
+            try:
+                return key.decode("utf-8").lower()
+            except UnicodeDecodeError:
+                return None
+        return None
+    else:
+        # Unix (macOS/Linux)
+        import select
+        import tty
+        import termios
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            r, _, _ = select.select([sys.stdin], [], [], 0)
+            if r:
+                return sys.stdin.read(1).lower()
+            return None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def get_key_blocking():
+    """阻塞等待按键，用于暂停状态。"""
+    if sys.platform == "win32":
+        import msvcrt
+        key = msvcrt.getch()
+        try:
+            return key.decode("utf-8").lower()
+        except UnicodeDecodeError:
+            return ""
+    else:
+        import tty
+        import termios
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            return sys.stdin.read(1).lower()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 if __name__ == "__main__":
     load_config()
