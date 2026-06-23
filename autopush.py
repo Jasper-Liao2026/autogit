@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 
 CONFIG_FILE = ".autopush.json"
@@ -227,5 +228,154 @@ def get_key_blocking():
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def render_status(config, watching, state, next_check, last_push):
+    """打印运行状态界面。"""
+    # 清屏
+    os.system("cls" if sys.platform == "win32" else "clear")
+
+    status_icon = {"running": "▶ 运行中", "paused": "⏸ 已暂停"}[state]
+    hints = "[p]暂停  [q]退出" if state == "running" else "[r]恢复  [q]退出"
+
+    print("=" * 45)
+    print(f"  AutoPush 自动推送 | 状态: {status_icon}")
+    print(f"  监控: {', '.join(watching)}")
+    print(f"  间隔: {config['interval_minutes']}分钟 | 分支: {config['branch']}")
+    print(f"  {hints}")
+    print("=" * 45)
+
+    next_str = next_check.strftime("%Y-%m-%d %H:%M:%S") if next_check else "--"
+    push_str = last_push if last_push else "尚无推送"
+    print(f"下次检查: {next_str}  |  上次推送: {push_str}")
+
+
+def main():
+    # 1. 环境校验
+    check_git_repo()
+
+    # 2. 加载配置（不存在时自动生成并退出）
+    config = load_config()
+
+    check_remote(config["branch"])
+
+    # 3. 校验监控文件
+    watching = validate_files_exist(config["files"])
+    print(f"✓ 监控 {len(watching)} 个文件: {', '.join(watching)}")
+
+    # 4. 初始化状态
+    state = "running"  # running | paused
+    interval = config["interval_minutes"] * 60  # 转为秒
+    next_check = datetime.now()  # 首次立即检查
+    last_push_info = None
+    consecutive_failures = 0
+    push_count = 0
+    start_time = datetime.now()
+
+    # 首次渲染
+    render_status(config, watching, state, next_check, last_push_info)
+
+    # 5. 主循环
+    tick = 0.2  # 每0.2秒检查一次按键
+    elapsed = 0.0  # 距离上次检查的累计秒数
+
+    try:
+        while True:
+            time.sleep(tick)
+
+            # --- 处理按键 ---
+            key = get_key()
+            if key == "q":
+                break
+            elif key == "p" and state == "running":
+                state = "paused"
+                next_check = None
+                render_status(config, watching, state, next_check, last_push_info)
+                print("\n已暂停，按 [r] 恢复")
+            elif key == "r" and state == "paused":
+                state = "running"
+                next_check = datetime.now()  # 恢复后立即检查一次
+                elapsed = interval  # 触发立即检查
+                render_status(config, watching, state, next_check, last_push_info)
+                print("\n已恢复运行")
+
+            # --- 暂停时跳过检查 ---
+            if state == "paused":
+                continue
+
+            # --- 累计时间 ---
+            elapsed += tick
+
+            # --- 更新倒计时显示（每秒刷新） ---
+            if int(elapsed) != int(elapsed - tick):
+                render_status(config, watching, state, next_check, last_push_info)
+
+            # --- 到达检查时间 ---
+            if elapsed < interval:
+                continue
+            elapsed = 0.0
+            next_check = datetime.now()
+
+            # 检测文件变动
+            changed = get_changed_files(watching)
+
+            if not changed:
+                last_push_info = f"{datetime.now().strftime('%H:%M')} — 无变动"
+                render_status(config, watching, state, next_check, last_push_info)
+                continue
+
+            # 有变动 → 执行 git 操作
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 检测到 {len(changed)} 个文件变动...")
+
+            if not git_add_files(changed):
+                continue
+
+            if not git_commit(changed, config["commit_prefix"]):
+                continue
+
+            # pull --rebase
+            pull_ok, has_conflict = git_pull_rebase(config["branch"])
+            if has_conflict:
+                state = "paused"
+                last_push_info = f"{datetime.now().strftime('%H:%M')} ⚠ 冲突，需手动解决"
+                render_status(config, watching, state, None, last_push_info)
+                print("\n⚠ 检测到合并冲突，已自动暂停。请手动解决冲突后按 [r] 恢复。")
+                continue
+            if not pull_ok:
+                consecutive_failures += 1
+                last_push_info = f"{datetime.now().strftime('%H:%M')} ✗ pull 失败"
+            else:
+                # push
+                if git_push(config["branch"]):
+                    consecutive_failures = 0
+                    push_count += 1
+                    last_push_info = f"{datetime.now().strftime('%H:%M')} ✓ 第{push_count}次推送成功"
+                else:
+                    consecutive_failures += 1
+                    last_push_info = f"{datetime.now().strftime('%H:%M')} ✗ push 失败"
+
+            # 连续失败10次 → 自动暂停
+            if consecutive_failures >= 10:
+                state = "paused"
+                last_push_info = f"{datetime.now().strftime('%H:%M')} ⚠ 连续10次失败，已暂停"
+                render_status(config, watching, state, None, last_push_info)
+                print(f"\n⚠ 连续 {consecutive_failures} 次推送失败，已自动暂停。按 [r] 恢复。")
+                continue
+
+            render_status(config, watching, state, next_check, last_push_info)
+
+    except KeyboardInterrupt:
+        print("\n")  # 换行
+
+    # 6. 退出统计
+    runtime = datetime.now() - start_time
+    minutes = int(runtime.total_seconds() // 60)
+    seconds = int(runtime.total_seconds() % 60)
+    print("=" * 45)
+    print(f"  AutoPush 已退出")
+    print(f"  运行时间: {minutes}分{seconds}秒")
+    print(f"  成功推送: {push_count} 次")
+    print(f"  连续失败: {consecutive_failures} 次")
+    print("=" * 45)
+
+
 if __name__ == "__main__":
-    load_config()
+    main()
