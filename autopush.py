@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 
 CONFIG_FILE = ".autopush.json"
 
@@ -118,6 +119,63 @@ def validate_files_exist(watch_files):
         print("✗ 错误: 所有监控文件都不存在，请检查 .autopush.json 中的 files 列表")
         sys.exit(1)
     return existing
+
+
+def build_commit_message(files, prefix):
+    """构建 commit message。超过5个文件时，只列前3个。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if len(files) <= 5:
+        file_list = ", ".join(files)
+    else:
+        file_list = f"{', '.join(files[:3])}...等 {len(files)} 个文件"
+    return f"{prefix}: {now} — 更新了 {file_list} ({len(files)} files)"
+
+
+def git_add_files(files):
+    """只 git add 指定的文件。"""
+    code, _, stderr = run_git(["add"] + files)
+    if code != 0:
+        print(f"✗ git add 失败: {stderr}")
+        return False
+    return True
+
+
+def git_commit(files, prefix):
+    """生成 commit message 并提交。成功返回 True。"""
+    message = build_commit_message(files, prefix)
+    code, _, stderr = run_git(["commit", "-m", message])
+    if code != 0:
+        print(f"✗ git commit 失败: {stderr}")
+        return False
+    print(f"  ✓ 已提交: {message}")
+    return True
+
+
+def git_pull_rebase(branch):
+    """执行 git pull --rebase origin <branch>。
+    返回 (success: bool, has_conflict: bool)。"""
+    code, stdout, stderr = run_git(["pull", "--rebase", "origin", branch])
+    if code != 0:
+        if "CONFLICT" in stdout or "CONFLICT" in stderr:
+            print(f"✗ 合并冲突！请手动解决冲突后继续")
+            return False, True
+        # 可能只是"已经是最新的"
+        if "Already up to date" in stdout or "Already up to date" in stderr:
+            return True, False
+        print(f"✗ git pull 失败: {stderr}")
+        return False, False
+    print(f"  ✓ 已拉取远程更新")
+    return True, False
+
+
+def git_push(branch):
+    """执行 git push origin <branch>。成功返回 True。"""
+    code, stdout, stderr = run_git(["push", "origin", branch])
+    if code != 0:
+        print(f"✗ git push 失败: {stderr}")
+        return False
+    print(f"  ✓ 已推送到 origin/{branch}")
+    return True
 
 
 if __name__ == "__main__":
